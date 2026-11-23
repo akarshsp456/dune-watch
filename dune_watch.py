@@ -172,7 +172,8 @@ def load(page, url: str) -> Snap:
 
 
 # ------------------------------------------------------------------ logic ---
-MOVIE_LINK_RE = re.compile(rf"/movies/{CITY}/([a-z0-9-]+)/(ET\d+)", re.I)
+MOVIE_LINK_RE = re.compile(rf"/movies/{CITY}/([a-z0-9-]+)/(?:buytickets/)?(ET\d+)", re.I)
+QUERY_BY_ET: dict[str, str] = {}  # keeps e.g. ?language=english from a pasted link
 
 
 def is_dune_three(slug: str) -> bool:
@@ -185,11 +186,17 @@ def discover_movies(page, state: dict) -> list[tuple[str, str]]:
     """Return [(slug, ETcode)] for Dune: Part Three in the city."""
     found: dict[str, str] = {}
     for u in MOVIE_URLS:
-        m = re.search(r"/movies/[^/]+/([a-z0-9-]+)/(ET\d+)", u, re.I)
+        # accepts .../movies/hyderabad/dune-part-three/ET00526390
+        #     and .../movies/hyderabad/dune-part-three/buytickets/ET00526390/20261218?language=english
+        m = re.search(r"/movies/[^/]+/([a-z0-9-]+)/(?:buytickets/)?(ET\d+)", u, re.I)
         if m:
             found[m.group(2)] = m.group(1)
-        elif re.fullmatch(r"ET\d+", u):
-            found[u] = DEFAULT_SLUG
+            if "?" in u:
+                QUERY_BY_ET[m.group(2)] = "?" + u.split("?", 1)[1]
+        elif re.search(r"ET\d+", u):
+            found[re.search(r"ET\d+", u).group(0)] = DEFAULT_SLUG
+        else:
+            log("Couldn't read a movie code from BMS_MOVIE_URLS entry:", u)
     if found:
         return [(s, e) for e, s in found.items()]
 
@@ -235,32 +242,24 @@ def check(page, state: dict) -> dict:
         return out
 
     for slug, et in movies:
-        base = f"{BMS}/buytickets/{slug}-{CITY}/movie-{CITY_CODE}-{et}-MT"
-        probe = load(page, base)
-        if probe.blocked:
-            raise BlockedError(base)
-        open_now = "/buytickets/" in probe.final_url and SHOWTIME_RE.search(probe.text)
-        log(f"{et} ({slug}): {'BOOKING OPEN' if open_now else 'not open yet'}  -> {probe.final_url}")
-        if not open_now:
-            continue
-        out["hyd_open"].append(probe.final_url)
-
-        hit = venue_hit(probe)
-        if hit:
-            out["amb"].append({"url": probe.final_url, "venue": hit[0], "imax": hit[1], "date": "first"})
-
-        dates = set(re.findall(rf"{et}-MT/(\d{{8}})", probe.everything)) | set(window_dates())
-        for d in sorted(dates):
-            url = f"{base}/{d}"
+        base = f"{BMS}/movies/{CITY}/{slug}/buytickets/{et}"
+        q = QUERY_BY_ET.get(et, "")
+        open_dates = []
+        for d in window_dates():
+            url = f"{base}/{d}{q}"
             snap = load(page, url)
             if snap.blocked:
                 raise BlockedError(url)
             if d not in snap.final_url or not SHOWTIME_RE.search(snap.text):
-                continue
+                continue  # no shows on this date (yet)
+            open_dates.append(d)
+            out["hyd_open"].append(snap.final_url)
             hit = venue_hit(snap)
             log(f"  {d}: shows listed; AMB Victory {'FOUND' if hit else 'not listed'}")
             if hit:
                 out["amb"].append({"url": snap.final_url, "venue": hit[0], "imax": hit[1], "date": d})
+        log(f"{et} ({slug}): " + (f"BOOKING OPEN on {', '.join(open_dates)}" if open_dates
+                                    else "no shows listed yet"))
     return out
 
 
@@ -309,7 +308,7 @@ def run_once() -> int:
         if count < AMB_MAX_ALERTS:
             first = sorted(res["amb"], key=lambda h: h["date"])[0]
             dates = [dt.datetime.strptime(d, "%Y%m%d").strftime("%d %b")
-                     for d in sorted({h["date"] for h in res["amb"] if h["date"] != "first"})]
+                     for d in sorted({h["date"] for h in res["amb"] })]
             imax = any(h["imax"] for h in res["amb"])
             notify("BOOK NOW: Dune 3 at AMB Victory",
                    f"{first['venue']} is live on BookMyShow"

@@ -1,0 +1,49 @@
+# Put this file in your repo at:  .github/workflows/dune-watch.yml
+name: Dune 3 AMB Victory watcher
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"     # every 10 min (GitHub may run it a few minutes late)
+  workflow_dispatch:            # lets you hit "Run workflow" manually
+
+concurrency:
+  group: dune-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Restore alert state
+        uses: actions/cache/restore@v4
+        with:
+          path: .dune_state.json
+          key: dune-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: dune-state-
+
+      - name: Check BookMyShow
+        run: python dune_watch.py
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BMS_MOVIE_URLS: ${{ vars.BMS_MOVIE_URLS }}
+
+      - name: Save alert state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .dune_state.json
+          key: dune-state-${{ github.run_id }}-${{ github.run_attempt }}
